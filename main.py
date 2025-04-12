@@ -1,59 +1,56 @@
-from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from models import Task, TaskCreate, TaskUpdate
-from database import get_tasks, get_task, create_task, update_task, delete_task
-import uvicorn
+from fastapi import FastAPI, HTTPException, Depends, Security
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from sqlalchemy.orm import Session
+from typing import List
+from models import Task, TaskIn, TaskUpdate
+from .database import SessionLocal
+from crud import create_task_db, get_tasks_db, get_task_db, update_task_db, delete_task_db
+from auth import authenticate_user, create_access_token
 
-app = FastAPI(
-    title="ToDo API",
-    description="A simple ToDo application with FastAPI",
-    version="1.0.0",
-    docs_url="/swagger",
-    redoc_url=None
-)
+def get_db():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
 
-# Enable CORS
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+app = FastAPI()
 
-@app.get("/tasks", response_model=list[Task], tags=["tasks"])
-async def read_tasks():
-    """Get all active tasks"""
-    return get_tasks()
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="token")
 
-@app.get("/tasks/{task_id}", response_model=Task, tags=["tasks"])
-async def read_task(task_id: str):
-    """Get a specific task by ID"""
-    task = get_task(task_id)
-    if task is None:
+@app.post("/token")
+async def login(form_data: OAuth2PasswordRequestForm = Depends()):
+    user = authenticate_user(form_data.username, form_data.password)  # You need to implement authentication
+    if not user:
+        raise HTTPException(status_code=400, detail="Incorrect username or password")
+    access_token = create_access_token(data={"sub": user.username})  # You need a User model for this
+    return {"access_token": access_token, "token_type": "bearer"}
+
+@app.post("/tasks", response_model=Task)
+def create_task(task: TaskIn, db: Session = Depends(get_db)):
+    return create_task_db(db, task)
+
+@app.get("/tasks", response_model=List[Task])
+def get_tasks(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db)):
+    return get_tasks_db(db)
+
+@app.get("/tasks/{id}", response_model=Task)
+def get_task(id: str, db: Session = Depends(get_db)):
+    task = get_task_db(db, id)
+    if not task:
         raise HTTPException(status_code=404, detail="Task not found")
     return task
 
-@app.post("/tasks", response_model=Task, tags=["tasks"])
-async def add_task(task: TaskCreate):
-    """Create a new task"""
-    return create_task(task)
-
-@app.put("/tasks/{task_id}", response_model=Task, tags=["tasks"])
-async def modify_task(task_id: str, task: TaskUpdate):
-    """Update an existing task"""
-    updated_task = update_task(task_id, task)
-    if updated_task is None:
+@app.put("/tasks/{id}", response_model=Task)
+def update_task(id: str, task_update: TaskUpdate, db: Session = Depends(get_db)):
+    task = update_task_db(db, id, task_update)
+    if not task:
         raise HTTPException(status_code=404, detail="Task not found")
-    return updated_task
+    return task
 
-@app.delete("/tasks/{task_id}", response_model=Task, tags=["tasks"])
-async def remove_task(task_id: str):
-    """Delete a task (soft delete)"""
-    deleted_task = delete_task(task_id)
-    if deleted_task is None:
+@app.delete("/tasks/{id}", response_model=dict)
+def delete_task(id: str, db: Session = Depends(get_db)):
+    success = delete_task_db(db, id)
+    if not success:
         raise HTTPException(status_code=404, detail="Task not found")
-    return deleted_task
-
-if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8080)
+    return {"message": "Task deleted successfully"}
